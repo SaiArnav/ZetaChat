@@ -21,10 +21,10 @@ import (
 type stage int
 
 const (
-	stageBooting  stage = iota // connecting to Telegram
-	stageAuth                  // interactive auth prompt
-	stageLoading               // fetching chats after auth
-	stageReady                 // full app: sidebar + chat + composer
+	stageBooting stage = iota // connecting to Telegram
+	stageAuth                 // interactive auth prompt
+	stageLoading              // fetching chats after auth
+	stageReady                // full app: sidebar + chat + composer
 )
 
 // Model is the root Bubble Tea model for ZetaChat.
@@ -126,15 +126,16 @@ func waitReady(a *telegram.Adapter) tea.Cmd {
 	}
 }
 
-// watchUpdates relays live messages from the adapter into the UI.
+// watchUpdates relays live messages from the adapter into the UI. It blocks
+// until a message arrives; handleLive re-arms it after every message so the
+// UI keeps listening for the lifetime of the program.
 func watchUpdates(a *telegram.Adapter) tea.Cmd {
 	return func() tea.Msg {
-		select {
-		case msg := <-a.Updates():
-			return liveMsg{msg: msg}
-		case <-time.After(30 * time.Second):
+		msg, ok := <-a.Updates()
+		if !ok {
 			return nil
 		}
+		return liveMsg{msg: msg}
 	}
 }
 
@@ -388,13 +389,26 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 	}
 
 	if msg.ChatID == focusedChat {
+		// The live echo of a message we just sent replaces our local echo,
+		// so the sent message doesn't show up twice.
+		if len(m.messages) > 0 {
+			last := &m.messages[len(m.messages)-1]
+			if msg.Out && strings.HasPrefix(last.ID, "local-") &&
+				last.ChatID == msg.ChatID && last.Text == msg.Text &&
+				time.Since(last.Timestamp) < time.Minute {
+				*last = msg
+				m.status = "Sent"
+				m = m.refreshMessagesView()
+				return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
+			}
+		}
 		// Append if not a duplicate of the last message.
 		if len(m.messages) == 0 || m.messages[len(m.messages)-1].ID != msg.ID {
 			m.messages = append(m.messages, msg)
 		}
 		m.status = fmt.Sprintf("New message from %s", msg.Sender.DisplayName)
 		m = m.refreshMessagesView()
-		return m, refreshUnread(m)
+		return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
 	}
 
 	// Elsewhere: bump unread + notify.
@@ -409,7 +423,7 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 		sender = "Unknown"
 	}
 	m.flash("[TG] "+sender+": "+msg.Text, false)
-	return m, refreshUnread(m)
+	return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
 }
 
 // flash sets a transient notification message.

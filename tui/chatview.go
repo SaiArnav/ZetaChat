@@ -45,6 +45,9 @@ func (m Model) currentChatID() string {
 }
 
 // refreshMessagesView re-renders the viewport when the chat or messages change.
+// It re-renders on every call so new messages appear immediately, but only
+// jumps to the bottom when the chat was just opened or the user was already
+// following the conversation (so scrolling up to read history isn't disturbed).
 func (m Model) refreshMessagesView() Model {
 	if m.stage != stageReady {
 		return m
@@ -54,11 +57,14 @@ func (m Model) refreshMessagesView() Model {
 	v.vp.Height = m.chatPaneHeight() - titleHeight - composerH
 
 	cur := m.currentChatID()
-	if v.chatID != cur || v.dirty {
-		v.vp.SetContent(m.renderMessages(m.messages))
-		v.vp.GotoBottom()
+	switched := v.chatID != cur || v.dirty
+	if switched {
 		v.chatID = cur
 		v.dirty = false
+	}
+	v.vp.SetContent(m.renderMessages(m.messages))
+	if switched || v.vp.AtBottom() {
+		v.vp.GotoBottom()
 	}
 	m.viewport = v
 	return m

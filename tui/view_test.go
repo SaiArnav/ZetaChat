@@ -19,7 +19,7 @@ func TestReadyViewRendersLayout(t *testing.T) {
 			{ID: "u1", Name: "Arnav", UnreadCount: 2},
 			{ID: "g2", Name: "Go Gophers"},
 		},
-		chatIdx:  0,
+		chatIdx: 0,
 		messages: []core.Message{
 			{
 				ID:        "m1",
@@ -59,5 +59,72 @@ func TestSplashViewHasBanner(t *testing.T) {
 	out := m.View()
 	if !strings.Contains(out, "████") {
 		t.Fatalf("splash missing banner:\n%s", out)
+	}
+}
+
+// TestNewMessageRefreshesViewport guards against the viewport only being
+// re-rendered when the chat changes: messages appended after the initial
+// render must appear without a chat switch or resize.
+func TestNewMessageRefreshesViewport(t *testing.T) {
+	m := Model{
+		stage:   stageReady,
+		width:   100,
+		height:  24,
+		chats:   []core.Chat{{ID: "u1", Name: "Arnav"}},
+		chatIdx: 0,
+		messages: []core.Message{
+			{ID: "m1", ChatID: "u1", Text: "first", Timestamp: time.Now(), Sender: core.User{DisplayName: "Arnav"}},
+		},
+		composer: textinput.New(),
+		search:   textinput.New(),
+	}
+	m = m.refreshMessagesView()
+	if out := m.View(); !strings.Contains(out, "first") {
+		t.Fatalf("initial message not rendered:\n%s", out)
+	}
+
+	m.messages = append(m.messages, core.Message{
+		ID:        "m2",
+		ChatID:    "u1",
+		Text:      "second message appears live",
+		Timestamp: time.Now(),
+		Sender:    core.User{DisplayName: "Arnav"},
+	})
+	m = m.refreshMessagesView()
+	if out := m.View(); !strings.Contains(out, "second message appears live") {
+		t.Fatalf("new message not rendered after refresh:\n%s", out)
+	}
+}
+
+// TestHandleLiveReplacesLocalEcho guards against sent messages showing twice:
+// the live echo of our own message should replace, not duplicate, the local echo.
+func TestHandleLiveReplacesLocalEcho(t *testing.T) {
+	m := Model{
+		stage:   stageReady,
+		width:   100,
+		height:  24,
+		chats:   []core.Chat{{ID: "u1", Name: "Arnav"}},
+		chatIdx: 0,
+		messages: []core.Message{
+			{ID: "local-1", ChatID: "u1", Text: "yo", Timestamp: time.Now(), Out: true},
+		},
+		composer: textinput.New(),
+		search:   textinput.New(),
+	}
+	live := core.Message{
+		ID:        "123",
+		ChatID:    "u1",
+		Text:      "yo",
+		Timestamp: time.Now(),
+		Out:       true,
+		Sender:    core.User{DisplayName: "me"},
+	}
+	got, _ := m.handleLive(live)
+	nm := got.(Model)
+	if len(nm.messages) != 1 {
+		t.Fatalf("expected echo replaced, got %d messages", len(nm.messages))
+	}
+	if nm.messages[0].ID != "123" {
+		t.Fatalf("expected real message ID, got %q", nm.messages[0].ID)
 	}
 }
