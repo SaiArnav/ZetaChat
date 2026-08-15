@@ -29,4 +29,6 @@ type Message struct {
 	Text        string
 	Timestamp   time.Time
 	Attachments []Attachment
+	// Out is true when the message was sent by the current account.
+	Out bool
 }
