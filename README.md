@@ -44,7 +44,7 @@ send messages, and search Telegram globally — all from your terminal.
 2. Build:
 
    ```bash
-   go build -o zetachat ./cmd/zetachat
+   go build -o zetachat.exe ./cmd/zetachat
    ```
 
 3. Run:
