@@ -1,0 +1,21 @@
+# Secrets — never commit these
+.env
+
+# Build artifacts
+*.exe
+*.exe~
+*.test
+/bin/
+/dist/
+
+# Local caches and sessions (stored in ~/.zetachat, but just in case)
+cache.db
+sessions/
+*.session
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
