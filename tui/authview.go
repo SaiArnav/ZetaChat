@@ -78,7 +78,7 @@ func (m Model) authView() string {
 		Padding(1, 2).
 		Width(60)
 
-	content := titleStyle.Render("ZetaChat — " + m.authPrompt.title) +
+	content := titleStyle.Render("ZetaChat — "+m.authPrompt.title) +
 		"\n\n" +
 		baseText.Render(m.authPrompt.body) +
 		"\n\n" +
@@ -106,7 +106,7 @@ func (m Model) searchResultsView() string {
 			line = lipgloss.NewStyle().
 				Background(lime).
 				Foreground(lipgloss.Color("#111827")).
-				Render(ts+" "+sender+"  "+truncateRight(res.Text, 60))
+				Render(ts + " " + sender + "  " + truncateRight(res.Text, 60))
 		}
 		b.WriteString(line)
 		b.WriteString("\n\n")

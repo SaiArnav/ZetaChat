@@ -21,11 +21,11 @@ var (
 	dimColor  = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#8A8F98"}
 	muted     = lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#52575F"}
 
-	lime = lipgloss.Color(colLime)
-	cyan = lipgloss.Color(colCyan)
-	red  = lipgloss.Color(colDanger)
+	lime  = lipgloss.Color(colLime)
+	cyan  = lipgloss.Color(colCyan)
+	red   = lipgloss.Color(colDanger)
 	amber = lipgloss.Color(colWarn)
-	gray = lipgloss.Color(colGray)
+	gray  = lipgloss.Color(colGray)
 
 	bg = lipgloss.AdaptiveColor{Light: "#F3F4F6", Dark: "#0F1012"}
 
@@ -72,11 +72,11 @@ var (
 			Padding(0, 1)
 
 	helpKey = lipgloss.NewStyle().
-			Foreground(lime).
-			Bold(true)
+		Foreground(lime).
+		Bold(true)
 
 	helpDim = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#9CA3AF"})
+		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#9CA3AF"})
 
 	flashStyle = lipgloss.NewStyle().
 			Foreground(lime).
