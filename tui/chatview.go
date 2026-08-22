@@ -194,7 +194,8 @@ var searchHeader = headerStyle.Render("Search")
 func (m Model) sidebarView() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("CHATS"))
+	b.WriteString(titleStyle.Render("◈ " + metaName(m.activePlat)))
+	b.WriteString(dimStyle.Render(" chats"))
 	b.WriteString("\n\n")
 
 	if len(m.chats) == 0 {

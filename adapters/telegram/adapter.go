@@ -103,6 +103,9 @@ func (a *Adapter) SetPrompter(p Prompter) {
 	a.prompter = p
 }
 
+// PlatformName reports the platform served by this adapter.
+func (a *Adapter) PlatformName() core.Platform { return core.PlatformTelegram }
+
 // Connect starts the MTProto client in the background. It authenticates
 // (interactively if needed) and unblocks Ready(). Returns immediately.
 func (a *Adapter) Connect(ctx context.Context) {

@@ -16,6 +16,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleAuthKey(msg)
 	case stageBooting, stageLoading:
 		return m.handleGlobalKey(msg)
+	case stageDashboard:
+		return m.handleDashboardKey(msg)
+	case stageQR:
+		return m.handleQRKey(msg)
 	case stageReady:
 		if m.searchMode {
 			return m.handleSearchKey(msg)
@@ -31,12 +35,88 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleGlobalKey: quit keys that work everywhere.
-func (m Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handleDashboardKey navigates the platform cards.
+func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "esc":
+	case "ctrl+c", "q":
 		m.quitting = true
 		return m, tea.Quit
+	case "down", "j", "right", "l", "tab":
+		if len(m.platOrder) > 0 {
+			m.dashIdx = (m.dashIdx + 1) % len(m.platOrder)
+		}
+	case "up", "k", "left", "h", "shift+tab":
+		if len(m.platOrder) > 0 {
+			m.dashIdx = (m.dashIdx - 1 + len(m.platOrder)) % len(m.platOrder)
+		}
+	case "enter":
+		if m.dashIdx >= 0 && m.dashIdx < len(m.platOrder) {
+			p := m.platOrder[m.dashIdx]
+			return m.selectPlatform(p)
+		}
+	}
+	return m, nil
+}
+
+// selectPlatform enters the chat view for one platform.
+func (m Model) selectPlatform(p core.Platform) (tea.Model, tea.Cmd) {
+	st := m.platState[p]
+	a := m.adapters[p]
+
+	if st == nil || a == nil {
+		return m, nil
+	}
+
+	if !st.ready {
+		// Not linked yet: show the pairing screen (QR or waiting spinner).
+		m.activePlat = p
+		m.stage = stageQR
+		return m, nil
+	}
+
+	if st.err != nil {
+		m.flash("["+metaName(p)+"] "+st.err.Error(), true)
+		return m, nil
+	}
+
+	m.activePlat = p
+	m.stage = stageLoading
+	m.chats = nil
+	m.messages = nil
+	m.chatIdx = 0
+	m.viewport.dirty = true
+	m.status = "[" + metaName(p) + "] loading chats…"
+
+	return m, tea.Batch(
+		loadCachedChatsCmd(m.store),
+		loadChatsCmd(a, m.store),
+	)
+}
+
+// handleGlobalKey: quit keys everywhere; esc opens the dashboard early.
+func (m Model) handleGlobalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		if len(m.platOrder) > 0 {
+			m.stage = stageDashboard
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// handleQRKey lets the user bail back to the dashboard mid-pairing.
+func (m Model) handleQRKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		m.stage = stageDashboard
+		return m, nil
 	}
 	return m, nil
 }
@@ -46,6 +126,10 @@ func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		m.quitting = true
 		return m, tea.Quit
+	case "esc":
+		dash := m
+		dash.openDashboard()
+		return dash, nil
 	case "down", "j":
 		if len(m.chats) > 0 {
 			m.chatIdx = (m.chatIdx + 1) % len(m.chats)
@@ -80,7 +164,7 @@ func (m Model) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focusViewport = true
 		}
 	case "r":
-		return m, loadChatsCmd(m.adapter, m.store)
+		return m, loadChatsCmd(m.activeAdapter(), m.store)
 	}
 	return m, nil
 }
@@ -131,7 +215,7 @@ func (m Model) handleComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			})
 			m = m.refreshMessagesView()
 
-			return m, sendCmd(m.adapter, chatID, text)
+			return m, sendCmd(m.activeAdapter(), chatID, text)
 		}
 	case "esc", "tab":
 		m.focusComposer = false
@@ -161,7 +245,7 @@ func (m Model) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.searchResults) == 0 {
 			q := m.search.Value()
 			if q != "" {
-				return m, searchCmd(m.adapter, q)
+				return m, searchCmd(m.activeAdapter(), q)
 			}
 			return m, nil
 		}

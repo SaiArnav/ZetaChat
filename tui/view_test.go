@@ -14,10 +14,10 @@ import (
 
 func TestReadyViewRendersLayout(t *testing.T) {
 	m := Model{
-		stage:         stageReady,
-		width:         100,
-		height:        24,
-		sidebarWidth:  32,
+		stage:        stageReady,
+		width:        100,
+		height:       24,
+		sidebarWidth: 32,
 		chats: []core.Chat{
 			{ID: "u1", Name: "Arnav", UnreadCount: 2},
 			{ID: "g2", Name: "Go Gophers"},
@@ -63,10 +63,10 @@ func TestReadyViewRendersLayout(t *testing.T) {
 
 func TestReadyViewDoesNotExceedTerminalHeight(t *testing.T) {
 	m := Model{
-		stage:         stageReady,
-		width:         100,
-		height:        24,
-		sidebarWidth:  32,
+		stage:        stageReady,
+		width:        100,
+		height:       24,
+		sidebarWidth: 32,
 		chats: []core.Chat{
 			{ID: "u1", Name: "Arnav"},
 			{ID: "g2", Name: "Go Gophers"},
@@ -109,12 +109,12 @@ func TestSplashViewHasBanner(t *testing.T) {
 // render must appear without a chat switch or resize.
 func TestNewMessageRefreshesViewport(t *testing.T) {
 	m := Model{
-		stage:         stageReady,
-		width:         100,
-		height:        24,
-		sidebarWidth:  32,
-		chats:         []core.Chat{{ID: "u1", Name: "Arnav"}},
-		chatIdx:       0,
+		stage:        stageReady,
+		width:        100,
+		height:       24,
+		sidebarWidth: 32,
+		chats:        []core.Chat{{ID: "u1", Name: "Arnav"}},
+		chatIdx:      0,
 		messages: []core.Message{
 			{
 				ID:        "m1",
@@ -153,12 +153,12 @@ func TestNewMessageRefreshesViewport(t *testing.T) {
 // the live echo of our own message should replace, not duplicate, the local echo.
 func TestHandleLiveReplacesLocalEcho(t *testing.T) {
 	m := Model{
-		stage:         stageReady,
-		width:         100,
-		height:        24,
-		sidebarWidth:  32,
-		chats:         []core.Chat{{ID: "u1", Name: "Arnav"}},
-		chatIdx:       0,
+		stage:        stageReady,
+		width:        100,
+		height:       24,
+		sidebarWidth: 32,
+		chats:        []core.Chat{{ID: "u1", Name: "Arnav"}},
+		chatIdx:      0,
 		messages: []core.Message{
 			{
 				ID:        "local-1",
@@ -199,11 +199,11 @@ func TestHandleLiveReplacesLocalEcho(t *testing.T) {
 func TestStatusBarDoesNotOverflowWidth(t *testing.T) {
 	for _, w := range []int{20, 40, 80, 120} {
 		m := Model{
-			stage:         stageReady,
-			width:         w,
-			height:        24,
-			sidebarWidth:  32,
-			status:        "Ready",
+			stage:        stageReady,
+			width:        w,
+			height:       24,
+			sidebarWidth: 32,
+			status:       "Ready",
 		}
 		bar := m.statusView()
 		barWidth := lipgloss.Width(bar)
@@ -218,12 +218,12 @@ func TestStatusBarDoesNotOverflowWidth(t *testing.T) {
 // network call completes) so the user sees their message instantly.
 func TestLocalEchoAppearsImmediately(t *testing.T) {
 	m := Model{
-		stage:         stageReady,
-		width:         100,
-		height:        24,
-		sidebarWidth:  32,
-		chats:         []core.Chat{{ID: "u1", Name: "Arnav"}},
-		chatIdx:       0,
+		stage:        stageReady,
+		width:        100,
+		height:       24,
+		sidebarWidth: 32,
+		chats:        []core.Chat{{ID: "u1", Name: "Arnav"}},
+		chatIdx:      0,
 		messages: []core.Message{
 			{ID: "m1", ChatID: "u1", Text: "existing", Timestamp: time.Now()},
 		},

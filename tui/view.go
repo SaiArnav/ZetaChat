@@ -21,6 +21,12 @@ func (m Model) View() string {
 	case stageAuth:
 		return m.authView()
 
+	case stageQR:
+		return m.qrView()
+
+	case stageDashboard:
+		return m.dashboardView()
+
 	case stageReady:
 		return m.mainView()
 	}
@@ -30,7 +36,8 @@ func (m Model) View() string {
 
 func (m Model) splashView(content string) string {
 	header := bannerStyle.Render(banner())
-	return m.centerView(header + "\n\n\n" + content)
+	hint := dimStyle.Render("esc dashboard · ctrl+c quit")
+	return m.centerView(header + "\n\n\n" + content + "\n\n" + hint)
 }
 
 func (m Model) centerView(content string) string {

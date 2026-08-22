@@ -13,7 +13,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/SaiArnav/ZetaChat/adapters/telegram"
+	"github.com/SaiArnav/ZetaChat/adapters/whatsapp"
 	"github.com/SaiArnav/ZetaChat/config"
+	"github.com/SaiArnav/ZetaChat/core"
 	"github.com/SaiArnav/ZetaChat/storage"
 	"github.com/SaiArnav/ZetaChat/tui"
 )
@@ -39,17 +41,36 @@ func main() {
 	}
 	defer store.Close()
 
-	adapter := telegram.New(cfg.AppID, cfg.AppHash, cfg.SessionPath, nil)
-	model := tui.NewModel(cfg, adapter, store)
+	adapters := buildAdapters(cfg)
+	model := tui.NewModel(cfg, adapters, store)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
-	// The adapter asks for auth inputs through the TUI prompt.
-	adapter.SetPrompter(&tui.UIPrompter{Program: program})
+	// The Telegram adapter asks for auth inputs through the TUI prompt.
+	if a, ok := adapters[core.PlatformTelegram].(*telegram.Adapter); ok {
+		a.SetPrompter(&tui.UIPrompter{Program: program})
+	}
 
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "zetachat:", err)
 		os.Exit(1)
 	}
+}
+
+// buildAdapters instantiates every enabled platform adapter.
+func buildAdapters(cfg *config.Config) map[core.Platform]core.LiveMessenger {
+	out := make(map[core.Platform]core.LiveMessenger, 2)
+
+	if cfg.AppID != 0 && cfg.AppHash != "" {
+		out[core.PlatformTelegram] = telegram.New(
+			cfg.AppID, cfg.AppHash, cfg.SessionPath, nil,
+		)
+	}
+	if cfg.WhatsAppEnabled {
+		out[core.PlatformWhatsApp] = whatsapp.New(
+			filepath.Join(cfg.DataDir, "whatsapp.db"),
+		)
+	}
+	return out
 }
 
 // runCLI executes a subcommand: chats | open | search | send | whoami.

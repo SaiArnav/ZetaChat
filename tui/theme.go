@@ -108,3 +108,6 @@ var (
 			Bold(true).
 			Margin(0, 0, 0, 1)
 )
+
+// amberStyle highlights pending/pairing states.
+var amberStyle = lipgloss.NewStyle().Foreground(amber).Bold(true)

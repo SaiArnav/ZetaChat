@@ -15,6 +15,14 @@ type Config struct {
 	AppID   int
 	AppHash string
 
+	// DiscordToken is a Discord bot token (from discord.com/developers).
+	// Empty means the Discord platform is disabled.
+	DiscordToken string
+
+	// WhatsAppEnabled can be set to "0"/"false" to skip the WhatsApp
+	// adapter. WhatsApp needs no credentials — it links by QR code.
+	WhatsAppEnabled bool
+
 	// DataDir is where the SQLite cache + sessions live.
 	DataDir string
 
@@ -62,17 +70,25 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	appHash := envStr("TELEGRAM_API_HASH", "APP_HASH")
-	if appID == 0 || appHash == "" {
+
+	telegramConfigured := appID != 0 && appHash != ""
+
+	switch strings.ToLower(envStr("WHATSAPP_ENABLED")) {
+	case "0", "false", "no", "off":
+		cfg.WhatsAppEnabled = false
+	default:
+		cfg.WhatsAppEnabled = true
+	}
+
+	if !telegramConfigured && !cfg.WhatsAppEnabled {
 		return nil, fmt.Errorf(
-			"telegram credentials missing.\n\n" +
-				"Setup steps:\n" +
-				"1. Go to https://my.telegram.org/apps\n" +
-				"2. Sign in with your Telegram account.\n" +
-				"3. Create an application and copy the API ID and API Hash.\n" +
-				"4. Create a .env file in the ZetaChat project folder.\n" +
-				"5. Add:\n\n" +
+			"no platform enabled.\n\n" +
+				"Configure at least one platform in .env:\n\n" +
+				"Telegram (https://my.telegram.org/apps):\n" +
 				"   TELEGRAM_API_ID=your_api_id\n" +
-				"   TELEGRAM_API_HASH=your_api_hash\n",
+				"   TELEGRAM_API_HASH=your_api_hash\n\n" +
+				"WhatsApp needs no credentials (QR pairing) — it is on by\n" +
+				"default; disable with WHATSAPP_ENABLED=0.\n",
 		)
 	}
 

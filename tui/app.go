@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/SaiArnav/ZetaChat/adapters/telegram"
 	"github.com/SaiArnav/ZetaChat/config"
 	"github.com/SaiArnav/ZetaChat/core"
 	"github.com/SaiArnav/ZetaChat/storage"
@@ -21,19 +20,35 @@ import (
 type stage int
 
 const (
-	stageBooting stage = iota // connecting to Telegram
-	stageAuth                 // interactive auth prompt
-	stageLoading              // fetching chats after auth
-	stageReady                // full app: sidebar + chat + composer
+	stageBooting   stage = iota // connecting to all platforms
+	stageAuth                   // interactive auth prompt
+	stageDashboard              // platform dashboard
+	stageLoading                // fetching chats after auth
+	stageReady                  // full app: sidebar + chat + composer
+	stageQR                     // scan-to-pair screen (WhatsApp)
 )
+
+// platformState tracks one platform's connection and account info.
+type platformState struct {
+	ready    bool
+	pairing  bool // waiting for the user to scan a QR code
+	err      error
+	selfName string
+	chatN    int
+}
 
 // Model is the root Bubble Tea model for ZetaChat.
 type Model struct {
-	cfg     *config.Config
-	adapter *telegram.Adapter
-	store   *storage.Store
-	ctx     context.Context
-	cancel  context.CancelFunc
+	cfg    *config.Config
+	store  *storage.Store
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	adapters   map[core.Platform]core.LiveMessenger
+	platOrder  []core.Platform
+	platState  map[core.Platform]*platformState
+	activePlat core.Platform
+	dashIdx    int
 
 	quitting bool
 	width    int
@@ -65,10 +80,11 @@ type Model struct {
 
 	flashUntil time.Time
 	selfName   string
+	qrCode     string
 }
 
 // NewModel builds the root Bubble Tea model.
-func NewModel(cfg *config.Config, adapter *telegram.Adapter, store *storage.Store) Model {
+func NewModel(cfg *config.Config, adapters map[core.Platform]core.LiveMessenger, store *storage.Store) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	sp := spinner.New()
@@ -85,56 +101,111 @@ func NewModel(cfg *config.Config, adapter *telegram.Adapter, store *storage.Stor
 	search := textinput.New()
 	search.Prompt = "/ "
 	search.PromptStyle = baseText.Bold(true).Foreground(cyan)
-	search.Placeholder = "Search Telegram…"
+	search.Placeholder = "Search messages…"
 	search.PlaceholderStyle = dimStyle
 	search.CharLimit = 200
 	search.TextStyle = baseText
 
+	order := platOrder(keysOf(adapters))
+
+	states := make(map[core.Platform]*platformState, len(order))
+	for _, p := range order {
+		states[p] = &platformState{}
+	}
+
+	active := core.PlatformTelegram
+	if len(order) > 0 {
+		active = order[0]
+	}
+
 	return Model{
-		cfg:           cfg,
-		adapter:       adapter,
-		store:         store,
-		ctx:           ctx,
-		cancel:        cancel,
-		stage:         stageBooting,
-		spinner:       sp,
-		sidebarWidth:  32,
-		composer:      composer,
-		search:        search,
-		viewport:      newMessagesViewport(),
-		status:        "Connecting to Telegram…",
+		cfg:          cfg,
+		store:        store,
+		ctx:          ctx,
+		cancel:       cancel,
+		adapters:     adapters,
+		platOrder:    order,
+		platState:    states,
+		activePlat:   active,
+		stage:        stageBooting,
+		spinner:      sp,
+		sidebarWidth: 32,
+		composer:     composer,
+		search:       search,
+		viewport:     newMessagesViewport(),
+		status:       bootingStatus(order),
 	}
 }
 
-// Init starts background work.
-func (m Model) Init() tea.Cmd {
-	m.adapter.Connect(m.ctx)
-	return tea.Batch(
-		m.spinner.Tick,
-		waitReady(m.adapter),
-		watchUpdates(m.adapter),
-	)
+func keysOf(adapters map[core.Platform]core.LiveMessenger) []core.Platform {
+	out := make([]core.Platform, 0, len(adapters))
+	for p := range adapters {
+		out = append(out, p)
+	}
+	return out
 }
 
-// waitReady resolves when the adapter is authed (or failed).
-func waitReady(a *telegram.Adapter) tea.Cmd {
+func bootingStatus(order []core.Platform) string {
+	if len(order) == 0 {
+		return "No platforms configured."
+	}
+	names := make([]string, 0, len(order))
+	for _, p := range order {
+		if meta, ok := platformRegistry[p]; ok {
+			names = append(names, meta.name)
+		} else {
+			names = append(names, string(p))
+		}
+	}
+	return "Connecting to " + strings.Join(names, " + ") + "…"
+}
+
+// activeAdapter returns the adapter for the platform being browsed.
+func (m Model) activeAdapter() core.LiveMessenger {
+	return m.adapters[m.activePlat]
+}
+
+// Init starts background work: connects every configured platform.
+func (m Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{m.spinner.Tick, bootGraceCmd()}
+	for _, p := range m.platOrder {
+		a := m.adapters[p]
+		a.Connect(m.ctx)
+		cmds = append(cmds,
+			waitReady(p, a),
+			watchUpdates(p, a),
+			watchQRCmd(p, a),
+		)
+	}
+	return tea.Batch(cmds...)
+}
+
+// bootGraceCmd opens the dashboard after a short grace period.
+func bootGraceCmd() tea.Cmd {
+	return tea.Tick(8*time.Second, func(time.Time) tea.Msg {
+		return bootGraceMsg{}
+	})
+}
+
+// waitReady resolves when one platform's adapter is authed (or failed).
+func waitReady(p core.Platform, a core.LiveMessenger) tea.Cmd {
 	return func() tea.Msg {
 		select {
 		case <-a.Ready():
 			if err := a.AuthErr(); err != nil {
-				return connErrMsg{err: err}
+				return connMsg{plat: p, err: err}
 			}
-			return connReadyMsg{}
-		case <-time.After(120 * time.Second):
-			return connErrMsg{err: errors.New("connection timed out after 120s")}
+			return connMsg{plat: p}
+		case <-time.After(5 * time.Minute):
+			return connMsg{plat: p, err: errors.New("connection timed out after 5 minutes")}
 		}
 	}
 }
 
-// watchUpdates relays live messages from the adapter into the UI. It blocks
+// watchUpdates relays live messages from one adapter into the UI. It blocks
 // until a message arrives; handleLive re-arms it after every message so the
 // UI keeps listening for the lifetime of the program.
-func watchUpdates(a *telegram.Adapter) tea.Cmd {
+func watchUpdates(p core.Platform, a core.LiveMessenger) tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-a.Updates()
 		if !ok {
@@ -202,8 +273,14 @@ func truncate(s string, n int) string {
 // ---------------------------------------------------------------------------
 // message types
 
-type connReadyMsg struct{}
-type connErrMsg struct{ err error }
+type connMsg struct {
+	plat core.Platform
+	err  error
+}
+
+// bootGraceMsg forces the dashboard open shortly after launch, even if
+// some platform never reaches a terminal state.
+type bootGraceMsg struct{}
 
 type cachedChatsMsg struct{ chats []core.Chat }
 type chatsLoadedMsg struct {
@@ -279,27 +356,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 
-	case connReadyMsg:
-		m.stage = stageLoading
-		m.status = "Connected — loading your chats…"
-		m.selfName = m.adapter.SelfName()
-
-		return m, tea.Batch(
-			loadCachedChatsCmd(m.store),
-			loadChatsCmd(m.adapter, m.store),
-		)
-
-	case connErrMsg:
-		m.stage = stageAuth
-		m.status = "Connection failed: " + msg.err.Error()
-		m.flash("Connection failed", true)
+	case bootGraceMsg:
+		if m.stage == stageBooting {
+			m.stage = stageDashboard
+		}
 		return m, nil
+
+	case connMsg:
+		st := m.platState[msg.plat]
+		if st == nil {
+			return m, nil
+		}
+		st.ready = true
+		st.err = msg.err
+		name := metaName(msg.plat)
+
+		if msg.err != nil {
+			m.flash("["+name+"] "+msg.err.Error(), true)
+		} else {
+			st.selfName = m.adapters[msg.plat].SelfName()
+			m.status = "[" + name + "] connected as " + st.selfName
+		}
+
+		if m.stage == stageQR && msg.plat == m.activePlat && msg.err == nil {
+			m.qrCode = ""
+			m.stage = stageDashboard
+		}
+
+		if m.allResolved() {
+			if m.stage != stageQR {
+				m.stage = stageDashboard
+			}
+			m.dashIdx = 0
+		}
+		return m, nil
+
+	case qrMsg:
+		if _, ok := m.adapters[msg.plat]; !ok {
+			return m, nil
+		}
+		// Store the code but don't hijack the screen — the dashboard
+		// stays in control; selecting the platform opens the QR view.
+		if st := m.platState[msg.plat]; st != nil {
+			st.pairing = true
+		}
+		m.activePlat = msg.plat
+		m.qrCode = msg.code
+		return m, watchQRCmd(msg.plat, m.adapters[msg.plat])
 
 	case authPromptMsg:
 		m.stage = stageAuth
 		return m, m.startAuthPrompt(msg)
 
 	case cachedChatsMsg:
+		msg.chats = filterPlatform(msg.chats, m.activePlat)
 		if len(msg.chats) == 0 {
 			return m, nil
 		}
@@ -317,11 +427,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.status = "Chats failed: " + msg.err.Error()
 			m.flash("Failed to load chats", true)
+			m.stage = stageDashboard
 			return m, nil
 		}
 
-		m.chats = msg.chats
+		m.chats = filterPlatform(msg.chats, m.activePlat)
 		m.stage = stageReady
+
+		if st := m.platState[m.activePlat]; st != nil {
+			st.chatN = len(m.chats)
+		}
 
 		// Keep current selection when possible.
 		keep := ""
@@ -339,7 +454,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		m.status = fmt.Sprintf("%d chats on Telegram", len(m.chats))
+		m.status = fmt.Sprintf(
+			"%d chats on %s",
+			len(m.chats),
+			metaName(m.activePlat),
+		)
 
 		cmds := []tea.Cmd{refreshUnread(m)}
 
@@ -450,10 +569,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleLive routes an incoming live message.
 func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
+	rearm := watchUpdates(msg.Platform, m.adapters[msg.Platform])
+	tag := metaName(msg.Platform)
+
 	// Only surface notifications when not focused on that chat.
 	focusedChat := ""
-	if !m.searchMode && len(m.chats) > 0 && m.chatIdx < len(m.chats) {
-		focusedChat = m.chats[m.chatIdx].ID
+	if !m.searchMode && m.stage == stageReady &&
+		m.chatIdx >= 0 && m.chatIdx < len(m.chats) {
+		cur := m.chats[m.chatIdx]
+		if cur.Platform == msg.Platform || cur.Platform == "" {
+			focusedChat = cur.ID
+		}
 	}
 
 	if msg.ChatID == focusedChat {
@@ -467,7 +593,7 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 				*last = msg
 				m.status = "Sent"
 				m = m.refreshMessagesView()
-				return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
+				return m, tea.Batch(refreshUnread(m), rearm)
 			}
 		}
 		// Append if not a duplicate of the last message.
@@ -476,12 +602,12 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 		}
 		m.status = fmt.Sprintf("New message from %s", msg.Sender.DisplayName)
 		m = m.refreshMessagesView()
-		return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
+		return m, tea.Batch(refreshUnread(m), rearm)
 	}
 
 	// Elsewhere: bump unread + notify.
 	for i, c := range m.chats {
-		if c.ID == msg.ChatID {
+		if c.ID == msg.ChatID && (c.Platform == msg.Platform || c.Platform == "") {
 			m.chats[i].UnreadCount++
 			break
 		}
@@ -490,8 +616,8 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 	if sender == "" {
 		sender = "Unknown"
 	}
-	m.flash("[TG] "+sender+": "+msg.Text, false)
-	return m, tea.Batch(refreshUnread(m), watchUpdates(m.adapter))
+	m.flash("["+tag+"] "+sender+": "+msg.Text, false)
+	return m, tea.Batch(refreshUnread(m), rearm)
 }
 
 // flash sets a transient notification message.
@@ -507,4 +633,52 @@ func (m *Model) flash(text string, isErr bool) {
 // refreshUnread persists state; kept as a trivial cmd so the UI re-renders.
 func refreshUnread(m Model) tea.Cmd {
 	return func() tea.Msg { return nil }
+}
+
+// allResolved reports whether every configured platform finished
+// connecting — linked, errored, or waiting for a QR scan.
+func (m Model) allResolved() bool {
+	for _, p := range m.platOrder {
+		st := m.platState[p]
+		if st == nil {
+			return false
+		}
+		if !st.ready && !st.pairing {
+			return false
+		}
+	}
+	return len(m.platOrder) > 0
+}
+
+// metaName returns the display name for a platform.
+func metaName(p core.Platform) string {
+	if meta, ok := platformRegistry[p]; ok {
+		return meta.name
+	}
+	return strings.ToUpper(string(p))
+}
+
+// filterPlatform keeps only chats belonging to the platform (legacy rows
+// with an empty Platform count as Telegram).
+func filterPlatform(chats []core.Chat, p core.Platform) []core.Chat {
+	out := chats[:0:0]
+	for _, c := range chats {
+		if c.Platform == p || c.Platform == "" && p == core.PlatformTelegram {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// openDashboard returns to the platform selection screen.
+func (m *Model) openDashboard() {
+	m.stage = stageDashboard
+	m.chats = nil
+	m.messages = nil
+	m.chatIdx = 0
+	m.searchMode = false
+	m.search.Blur()
+	m.focusComposer = false
+	m.composer.Blur()
+	m.viewport.dirty = true
 }

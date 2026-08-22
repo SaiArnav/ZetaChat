@@ -1,6 +1,6 @@
 # ZetaChat
 
-Terminal-first messaging client — Telegram from the terminal.
+Terminal-first messaging client — Telegram + WhatsApp from the terminal.
 
 [![CI](https://github.com/SaiArnav/ZetaChat/actions/workflows/ci.yml/badge.svg)](https://github.com/SaiArnav/ZetaChat/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -13,26 +13,33 @@ Terminal-first messaging client — Telegram from the terminal.
 [![Commit activity](https://img.shields.io/github/commit-activity/m/SaiArnav/ZetaChat)](https://github.com/SaiArnav/ZetaChat/commits)
 [![Go Report Card](https://goreportcard.com/badge/github.com/SaiArnav/ZetaChat)](https://goreportcard.com/report/github.com/SaiArnav/ZetaChat)
 
-A neon-styled Bubble Tea TUI over the MTProto protocol. Browse chats, read and
-send messages, and search Telegram globally — all from your terminal.
+A neon-styled Bubble Tea TUI with a futuristic platform dashboard. Connect
+Telegram (MTProto) and/or WhatsApp (QR pairing), browse chats, read and send
+messages, and search history — all from your terminal.
 
 ## Features
 
+- **Platform dashboard** — glowing connection cards with per-platform icons,
+  live status dots, account names and chat counts. Select a card to enter
+  that platform's chats; `esc` jumps back.
+- **WhatsApp by QR** — link your phone once with an on-screen QR code;
+  chats arrive via history sync, messages stream live.
 - **TUI** — sidebar chat list with unread badges, scrollable message history,
-  composer, `/` global search, live incoming messages, neon lime/cyan theme.
+  composer, `/` search, live incoming messages, neon lime/cyan theme.
 - **CLI** — `chats`, `open`, `search`, `send`, `whoami` with `--json` output
-  for scripting.
+  for scripting (Telegram).
 - **Caching** — SQLite store keeps chats and messages locally, so the TUI
   paints instantly and can show history offline.
 - **Interactive auth** — phone → code → 2FA password → terms, prompted
   in-app (TUI) or on stdin (CLI).
-- **Plugin-ready** — the `core.Messenger` interface means new platforms
-  (Discord, etc.) drop in as new adapters.
+- **Plugin-ready** — the `core.LiveMessenger` interface means new platforms
+  drop in as new adapters.
 
 ## Setup
 
-1. Create `.env` with your Telegram API credentials from
-   [my.telegram.org](https://my.telegram.org/apps):
+At least one platform must be enabled in `.env`.
+
+1. Telegram — get API credentials from [my.telegram.org](https://my.telegram.org/apps):
 
    ```
    TELEGRAM_API_ID=123456
@@ -41,33 +48,51 @@ send messages, and search Telegram globally — all from your terminal.
 
    (Legacy `APP_ID` / `APP_HASH` keys are also accepted.)
 
-2. Build:
+2. WhatsApp — needs **no credentials**. On first launch ZetaChat shows a QR
+   code; open WhatsApp on your phone → Settings → Linked devices → Link a
+   device and scan it. The session is stored in `~/.zetachat/whatsapp.db`.
+   Note: chat history comes from your phone's history sync plus live
+   messages — WhatsApp has no server-side history API.
+
+3. Build:
 
    ```bash
    go build -o zetachat.exe ./cmd/zetachat
    ```
 
-3. Run:
+4. Run:
 
    ```bash
    ./zetachat            # TUI
    ./zetachat chats      # CLI
    ```
 
-The session file is stored at `~/.zetachat/sessions/telegram.json` and the
-cache at `~/.zetachat/cache.db`.
+The Telegram session lives at `~/.zetachat/sessions/telegram.json`, the
+WhatsApp session at `~/.zetachat/whatsapp.db`, and the cache at
+`~/.zetachat/cache.db`.
 
 ## Usage
 
 ### TUI keys
 
+Dashboard:
+
 | Key              | Action                          |
 | ---------------- | ------------------------------- |
+| `j`/`k`, `↑`/`↓` | select platform card            |
+| `enter`          | open that platform's chats      |
+| `q` / `ctrl+c`   | quit                            |
+
+Chats:
+
+| Key              | Action                          |
+| ---------------- | ------------------------------- |
+| `esc`            | back to dashboard               |
 | `j`/`k`, `↑`/`↓` | navigate chats                  |
 | `enter`          | open chat                       |
 | `tab`            | focus composer / back to list   |
 | `enter` (composer)| send message                   |
-| `/`              | search Telegram                 |
+| `/`              | search current platform         |
 | `r`              | refresh chats                   |
 | `q` / `ctrl+c`   | quit                            |
 
@@ -90,9 +115,9 @@ supergroups/channels, or `@username`.
 
 ```
 cmd/zetachat/   entry point: TUI + CLI dispatch
-tui/            Bubble Tea model, views, theme, keys
-adapters/       platform adapters (telegram/ via gotd/td)
-core/           platform-neutral types (Message, Chat, Messenger)
+tui/            Bubble Tea model, dashboard, views, theme, keys
+adapters/       platform adapters (telegram/ via gotd/td, whatsapp/ via whatsmeow)
+core/           platform-neutral types (Message, Chat, LiveMessenger)
 config/         .env loading + paths
 storage/        SQLite cache
 ```
