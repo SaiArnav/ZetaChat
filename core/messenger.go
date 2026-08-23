@@ -62,3 +62,38 @@ type LiveMessenger interface {
 type QRStreamer interface {
 	QRCodes() <-chan string
 }
+
+// ChatReadMarker is an optional adapter capability: sending a read
+// receipt so the platform's own unread counter clears (otherwise the
+// count resurrects on every Chats() refresh).
+type ChatReadMarker interface {
+	// MarkChatRead tells the platform every message in chatID up to
+	// lastMsgID has been seen by the user.
+	MarkChatRead(chatID, lastMsgID string) error
+}
+
+// sendGate is the process-wide confirmation gate consulted before any
+// adapter delivers a message. Nil means sends are allowed.
+var sendGate func(chatID, text string) error
+
+// ErrSendDenied is returned by a gate that refuses a delivery.
+var ErrSendDenied = errSendDenied{}
+
+type errSendDenied struct{}
+
+func (errSendDenied) Error() string { return "send denied by confirmation gate" }
+
+// SetSendGate installs the global send gate — the single choke point
+// every SendMessage passes through (SPEC.md section 9: "no silent
+// sends, ever"). Agent/automation layers MUST install a gate that asks
+// a human before returning nil.
+func SetSendGate(g func(chatID, text string) error) { sendGate = g }
+
+// GateSend applies the installed gate. Adapters call this at the top of
+// SendMessage; a non-nil error aborts the delivery.
+func GateSend(chatID, text string) error {
+	if sendGate == nil {
+		return nil
+	}
+	return sendGate(chatID, text)
+}

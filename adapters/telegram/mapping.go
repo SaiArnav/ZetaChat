@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -420,6 +421,9 @@ func (a *Adapter) Messages(chatID string) ([]core.Message, error) {
 
 // SendMessage sends a text message to a chat.
 func (a *Adapter) SendMessage(chatID string, text string) error {
+	if err := core.GateSend(chatID, text); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	authed := a.authed
 	sender := a.sender
@@ -439,6 +443,63 @@ func (a *Adapter) SendMessage(chatID string, text string) error {
 	return nil
 }
 
+// MarkChatRead sends a read receipt for chatID up to lastMsgID so the
+// server-side dialog.UnreadCount clears (implements core.ChatReadMarker).
+func (a *Adapter) MarkChatRead(chatID, lastMsgID string) error {
+	a.mu.Lock()
+	authed := a.authed
+	raw := a.raw
+	pi, known := a.peers[chatID]
+	a.mu.Unlock()
+	if !authed {
+		return ErrNotAuthorized
+	}
+
+	maxID := 1<<31 - 1 // mark everything currently in the dialog
+	if n, err := strconv.Atoi(lastMsgID); err == nil && n > 0 {
+		maxID = n
+	}
+
+	// Supergroups/channels need channels.readMessageContents.
+	if strings.HasPrefix(chatID, "s") {
+		if !known {
+			return ErrChatNotFound
+		}
+		_, err := raw.ChannelsReadMessageContents(a.ctx,
+			&tg.ChannelsReadMessageContentsRequest{
+				Channel: &tg.InputChannel{
+					ChannelID:  pi.id,
+					AccessHash: pi.accessHash,
+				},
+			})
+		if err != nil {
+			return fmt.Errorf("telegram: read contents: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := raw.MessagesReadHistory(a.ctx,
+		&tg.MessagesReadHistoryRequest{
+			Peer:  peerInput(pi),
+			MaxID: maxID,
+		}); err != nil {
+		return fmt.Errorf("telegram: read history: %w", err)
+	}
+	return nil
+}
+
+// peerInput builds an InputPeerClass from stored peer info.
+func peerInput(p peerInfo) tg.InputPeerClass {
+	switch p.kind {
+	case "user":
+		return &tg.InputPeerUser{UserID: p.id, AccessHash: p.accessHash}
+	case "channel":
+		return &tg.InputPeerChannel{ChannelID: p.id, AccessHash: p.accessHash}
+	default:
+		return &tg.InputPeerChat{ChatID: p.id}
+	}
+}
+
 // Search searches all chats and returns matching messages.
 func (a *Adapter) Search(query string) ([]core.Message, error) {
 	a.mu.Lock()
@@ -450,8 +511,9 @@ func (a *Adapter) Search(query string) ([]core.Message, error) {
 	}
 
 	res, err := raw.MessagesSearchGlobal(a.ctx, &tg.MessagesSearchGlobalRequest{
-		Q:     query,
-		Limit: 50,
+		Filter: &tg.InputMessagesFilterEmpty{},
+		Q:      query,
+		Limit:  50,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("telegram: search: %w", err)

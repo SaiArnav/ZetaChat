@@ -8,49 +8,157 @@ import (
 	"github.com/SaiArnav/ZetaChat/core"
 )
 
-// dashboardView renders the platform selection screen: a row of glowing
-// connection cards, one per configured platform.
+// dashListWidth is the fixed width of the left selection column.
+const dashListWidth = 34
+
+// dashboardView renders a master-detail platform screen: a selection
+// rail on the left, a detail panel for the highlighted entry on the
+// right, and the live connection status underneath.
 func (m Model) dashboardView() string {
-	cards := make([]string, 0, len(m.platOrder))
-	for i, p := range m.platOrder {
-		st := m.platState[p]
-		if st == nil {
-			st = &platformState{}
+	cards := dashCards(m.platOrder)
+
+	// Left rail -------------------------------------------------------
+	var rail strings.Builder
+	rail.WriteString(sectionStyle.Render("PLATFORMS"))
+	rail.WriteString("\n\n")
+
+	for i, p := range cards {
+		selected := i == m.dashIdx
+		name := metaName(p)
+		dot, label := m.cardStatus(p)
+
+		row := "  " + name +
+			strings.Repeat(" ", max(0, 16-lipgloss.Width(name))) +
+			dot + " " + dimStyle.Render(label)
+
+		if selected {
+			row = selectedRow.Render("▌ ") + selectedRow.Render(row)
 		}
-		cards = append(cards, m.platformCard(p, st, i == m.dashIdx))
+		rail.WriteString(row)
+		rail.WriteString("\n\n")
 	}
 
-	row := lipgloss.JoinHorizontal(lipgloss.Center, cards...)
-	if len(cards) == 1 {
-		row = lipgloss.NewStyle().Padding(0, 2).Render(row)
-	}
+	railBox := paneBorder(false).
+		Width(dashListWidth).
+		Render(strings.TrimRight(rail.String(), "\n"))
 
-	title := titleStyle.Render("ZETACHAT") +
+	// Right detail ----------------------------------------------------
+	detail := m.detailPanel(cards[m.dashIdx])
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top, railBox, detail)
+
+	head := titleStyle.Render("ZETACHAT") +
 		dimStyle.Render("  //  multi-platform relay")
 
-	hint := dimStyle.Render("↑↓ select  ") +
-		helpKey.Render("enter") + helpDim.Render(" connect  ") +
-		helpKey.Render("q") + helpDim.Render(" quit")
+	rule := mutedSty.Render(strings.Repeat("─", max(20, min(m.width, 72))))
 
-	status := ""
-	if m.status != "" {
-		status = "\n\n" + m.status
+	statusLine := m.spinner.View() + "  " + baseText.Render(m.bootSummary())
+	hints := dimStyle.Render(m.help.ShortHelpView(shortHelpFor(m)))
+
+	panel := lipgloss.JoinVertical(lipgloss.Left,
+		head,
+		rule,
+		"",
+		body,
+		"",
+		statusLine,
+		" ",
+		hints,
+	)
+
+	return m.centerView(panel)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// cardStatus returns the dot + label for one dashboard row.
+func (m Model) cardStatus(p core.Platform) (string, string) {
+	if p == core.PlatformAll {
+		return m.aggregateDot()
+	}
+	st := m.platState[p]
+	if st == nil {
+		return dimStyle.Render("◌"), "LINKING…"
+	}
+	return st.statusDot(), st.statusLabel()
+}
+
+// detailPanel renders the right-hand description of the selection.
+func (m Model) detailPanel(p core.Platform) string {
+	meta := platformRegistry[p]
+	accent := lipgloss.Color(meta.accent)
+
+	var b strings.Builder
+
+	iconLines := make([]string, len(meta.icon))
+	for i, ln := range meta.icon {
+		style := lipgloss.NewStyle().Foreground(accent)
+		if _, label := m.cardStatus(p); label == "OFFLINE" {
+			style = style.Faint(true)
+		}
+		iconLines[i] = style.Render(ln)
 	}
 
-	panel := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(gray).
-		Padding(1, 3).
-		Render(strings.Join([]string{
-			m.spinner.View() + " " + baseText.Render(m.bootSummary()),
-			"",
-			row,
-			status,
-			"",
-			hint,
-		}, "\n"))
+	b.WriteString(lipgloss.NewStyle().
+		Foreground(accent).
+		Bold(true).
+		Render(meta.name))
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(meta.tagline))
+	b.WriteString("\n\n")
+	b.WriteString(strings.Join(iconLines, "\n"))
+	b.WriteString("\n\n")
 
-	return m.centerView(title + "\n\n" + panel)
+	switch p {
+	case core.PlatformAll:
+		online := 0
+		totalChats := 0
+		for _, q := range m.platOrder {
+			if st := m.platState[q]; st != nil && st.ready && st.err == nil {
+				online++
+				totalChats += st.chatN
+			}
+		}
+		b.WriteString(baseText.Render(
+			pluralize(online, "platform") + " online"))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(pluralize(totalChats, "chat") +
+			" in merged inbox"))
+	default:
+		st := m.platState[p]
+		account := meta.tagline
+		chats := ""
+		if st != nil {
+			dot, label := m.cardStatus(p)
+			line := dot + " " + label
+			if st.err != nil {
+				line += " · " + truncateRight(st.err.Error(), 28)
+			} else if st.selfName != "" {
+				line += " · " + st.selfName
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+			chats = pluralize(st.chatN, "chat")
+		}
+		_ = account
+		if chats != "" {
+			b.WriteString(dimStyle.Render(chats))
+		}
+	}
+
+	return paneBorder(true).Padding(1, 3).Render(b.String())
 }
 
 // bootSummary describes the overall connection state.
@@ -64,66 +172,23 @@ func (m Model) bootSummary() string {
 	switch {
 	case online == total && total > 0:
 		return "all platforms online"
+	case m.allResolved():
+		return "ready — pick a destination"
 	default:
 		return "establishing uplinks…"
 	}
 }
 
-// platformCard renders one platform tile with icon, status and account.
-func (m Model) platformCard(p core.Platform, st *platformState, selected bool) string {
-	meta, ok := platformRegistry[p]
-	if !ok {
-		return ""
-	}
-
-	accent := lipgloss.Color(meta.accent)
-
-	iconLines := make([]string, len(meta.icon))
-	for i, ln := range meta.icon {
-		style := lipgloss.NewStyle().Foreground(accent)
-		if !st.ready || st.err != nil {
-			style = style.Faint(true)
+// inboxCardStats is kept for tests / future reuse.
+func (m Model) inboxCardStats() (int, int) {
+	online, total := 0, 0
+	for _, p := range m.platOrder {
+		total++
+		if st := m.platState[p]; st != nil && st.ready && st.err == nil {
+			online++
 		}
-		iconLines[i] = style.Render(ln)
 	}
-
-	head := lipgloss.NewStyle().
-		Foreground(accent).
-		Bold(true).
-		Render(meta.name) +
-		"  " + st.statusDot() + dimStyle.Render(" "+st.statusLabel())
-
-	account := st.selfName
-	if st.err != nil {
-		account = truncateRight(st.err.Error(), 24)
-	}
-	if account == "" {
-		account = meta.tagline
-	}
-
-	chats := dimStyle.Render(pluralize(st.chatN, "chat"))
-
-	body := strings.Join(iconLines, "\n") + "\n" +
-		head + "\n" +
-		dimStyle.Render(account) + "\n" +
-		chats
-
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(accent).
-		Padding(1, 2).
-		Render(body)
-
-	if selected {
-		card = lipgloss.NewStyle().
-			Foreground(lime).
-			Bold(true).
-			Render(card)
-	} else {
-		card = lipgloss.NewStyle().Faint(true).Render(card)
-	}
-
-	return card
+	return online, total
 }
 
 func pluralize(n int, noun string) string {

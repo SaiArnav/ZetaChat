@@ -7,9 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/SaiArnav/ZetaChat/config"
 	"github.com/SaiArnav/ZetaChat/core"
@@ -26,6 +29,17 @@ const (
 	stageLoading                // fetching chats after auth
 	stageReady                  // full app: sidebar + chat + composer
 	stageQR                     // scan-to-pair screen (WhatsApp)
+	stageError                  // recoverable app-level failure screen
+)
+
+// Pane identifies which chat-view pane holds keyboard focus. Its border
+// glows ember while the others stay quiet.
+type Pane int
+
+const (
+	PaneSidebar Pane = iota // zero value: chats list starts focused
+	PaneMessages
+	PaneComposer
 )
 
 // platformState tracks one platform's connection and account info.
@@ -68,10 +82,15 @@ type Model struct {
 	messages []core.Message
 	cached   bool
 
-	viewport      messagesViewport
-	focusComposer bool
-	focusViewport bool
-	composer      textinput.Model
+	viewport messagesViewport
+	focus    Pane // explicit keyboard focus: sidebar/messages/composer
+	composer textarea.Model
+
+	help       help.Model
+	helpOpen   bool // ? overlay across all stages
+	mouseOn    bool // terminal mouse reporting (scroll); off = select/copy
+	confirming bool // send-confirmation bar armed (cfg.ConfirmSend)
+	fatal      string
 
 	searchMode    bool
 	search        textinput.Model
@@ -81,6 +100,21 @@ type Model struct {
 	flashUntil time.Time
 	selfName   string
 	qrCode     string
+	km         *keyMap // nil in literal-built models; see keys()
+
+	// readCleared remembers chats opened this session so a live chat-list
+	// refresh can't resurrect their badge before/without a read receipt.
+	readCleared map[string]bool
+}
+
+// keys returns the keymap, building defaults on demand so models
+// constructed as literals (tests) still route keys and render help.
+func (m Model) keys() *keyMap {
+	if m.km == nil {
+		k := newKeyMap()
+		return &k
+	}
+	return m.km
 }
 
 // NewModel builds the root Bubble Tea model.
@@ -90,13 +124,20 @@ func NewModel(cfg *config.Config, adapters map[core.Platform]core.LiveMessenger,
 	sp := spinner.New()
 	sp.Style = spinnerStyle()
 
-	composer := textinput.New()
+	composer := textarea.New()
 	composer.Prompt = "❯ "
-	composer.PromptStyle = baseText.Bold(true).Foreground(lime)
-	composer.Placeholder = "Message…"
-	composer.PlaceholderStyle = dimStyle
+	composer.FocusedStyle.Prompt = lipgloss.NewStyle().
+		Foreground(lime).
+		Bold(true)
+	composer.BlurredStyle.Prompt = dimStyle
+	composer.Placeholder = "Message…  (shift+enter = newline)"
+	composer.BlurredStyle.Placeholder = dimStyle
 	composer.CharLimit = 4096
-	composer.TextStyle = baseText
+	composer.MaxHeight = maxComposerLines
+	composer.SetHeight(minComposerLines)
+	composer.ShowLineNumbers = false
+	composer.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	composer.Blur()
 
 	search := textinput.New()
 	search.Prompt = "/ "
@@ -118,7 +159,7 @@ func NewModel(cfg *config.Config, adapters map[core.Platform]core.LiveMessenger,
 		active = order[0]
 	}
 
-	return Model{
+	m := Model{
 		cfg:          cfg,
 		store:        store,
 		ctx:          ctx,
@@ -127,14 +168,19 @@ func NewModel(cfg *config.Config, adapters map[core.Platform]core.LiveMessenger,
 		platOrder:    order,
 		platState:    states,
 		activePlat:   active,
-		stage:        stageBooting,
+		stage:        stageDashboard, // dashboard first; platforms link in background
 		spinner:      sp,
-		sidebarWidth: 32,
+		sidebarWidth: 28,
 		composer:     composer,
 		search:       search,
 		viewport:     newMessagesViewport(),
 		status:       bootingStatus(order),
+		help:         helpModel(),
+		mouseOn:      true,
 	}
+	k := newKeyMap()
+	m.km = &k
+	return m
 }
 
 func keysOf(adapters map[core.Platform]core.LiveMessenger) []core.Platform {
@@ -161,13 +207,37 @@ func bootingStatus(order []core.Platform) string {
 }
 
 // activeAdapter returns the adapter for the platform being browsed.
+// Nil in unified-inbox mode (PlatformAll) — per-chat operations must use
+// adapterForChat instead.
 func (m Model) activeAdapter() core.LiveMessenger {
 	return m.adapters[m.activePlat]
 }
 
-// Init starts background work: connects every configured platform.
+// adapterForChat resolves the adapter that owns a chat.
+func (m Model) adapterForChat(c core.Chat) core.LiveMessenger {
+	if a, ok := m.adapters[c.Platform]; ok {
+		return a
+	}
+	// Legacy cached rows predate the Platform tag.
+	return m.adapters[core.PlatformTelegram]
+}
+
+// readyAdapters lists adapters whose connection succeeded.
+func (m Model) readyAdapters() []core.Platform {
+	out := make([]core.Platform, 0, len(m.platOrder))
+	for _, p := range m.platOrder {
+		if st := m.platState[p]; st != nil && st.ready && st.err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Init starts background work: connects every configured platform and
+// turns on terminal mouse reporting (trackpad/wheel scrolling). "M"
+// toggles it off so native text selection works, like opencode.
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.spinner.Tick, bootGraceCmd()}
+	cmds := []tea.Cmd{m.spinner.Tick, bootGraceCmd(), tea.EnableMouseCellMotion}
 	for _, p := range m.platOrder {
 		a := m.adapters[p]
 		a.Connect(m.ctx)
@@ -335,16 +405,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Keep the composer and search input inside the available
-		// width of the chat pane.
-		inputWidth := m.chatPaneWidth() - 2
-		if inputWidth < 1 {
-			inputWidth = 1
+		// Keep the composer sized to its content and the search
+		// input inside the available width of the chat pane.
+		m.search.Width = m.chatPaneWidth() - 4
+		if m.search.Width < 1 {
+			m.search.Width = 1
 		}
-
-		m.composer.Width = inputWidth
-		m.search.Width = inputWidth
-
+		m = m.syncComposer()
 		m = m.refreshMessagesView()
 		return m, nil
 
@@ -410,6 +477,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cachedChatsMsg:
 		msg.chats = filterPlatform(msg.chats, m.activePlat)
+		if m.activePlat == core.PlatformAll {
+			sortChatsByRecency(msg.chats)
+		}
+		m.applyReadClearedTo(msg.chats)
 		if len(msg.chats) == 0 {
 			return m, nil
 		}
@@ -425,17 +496,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chatsLoadedMsg:
 		if msg.err != nil {
-			m.status = "Chats failed: " + msg.err.Error()
-			m.flash("Failed to load chats", true)
-			m.stage = stageDashboard
-			return m, nil
+			return m, nil // loadAllChatsCmd already merged partial results
 		}
 
 		m.chats = filterPlatform(msg.chats, m.activePlat)
+		m.applyReadCleared()
+		if m.activePlat == core.PlatformAll {
+			sortChatsByRecency(m.chats)
+		}
 		m.stage = stageReady
 
-		if st := m.platState[m.activePlat]; st != nil {
-			st.chatN = len(m.chats)
+		if m.activePlat != core.PlatformAll {
+			if st := m.platState[m.activePlat]; st != nil {
+				st.chatN = len(m.chats)
+			}
 		}
 
 		// Keep current selection when possible.
@@ -459,7 +533,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			len(m.chats),
 			metaName(m.activePlat),
 		)
-
 		cmds := []tea.Cmd{refreshUnread(m)}
 
 		if len(m.chats) > 0 {
@@ -479,11 +552,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.messages = msg.msgs
-		m.status = fmt.Sprintf("%d messages", len(m.messages))
+		if len(m.messages) == 0 {
+			m.status = "no messages here yet"
+		} else {
+			m.status = fmt.Sprintf("%d messages", len(m.messages))
+		}
 		m.cached = false
-		m = m.refreshMessagesView()
+		m = m.markRead(m.currentChatID())
+		m = m.refreshMessagesView().followLatest()
 
-		return m, refreshUnread(m)
+		cmds := []tea.Cmd{refreshUnread(m)}
+
+		// Send a read receipt so the platform's own unread counter
+		// clears and the badge doesn't come back on the next refresh.
+		if len(msg.msgs) > 0 && msg.chatID == m.currentChatID() {
+			if rm, ok := m.adapterForChat(
+				m.chats[m.chatIdx],
+			).(core.ChatReadMarker); ok {
+				cmds = append(cmds, markReadCmd(rm, msg.chatID,
+					msg.msgs[len(msg.msgs)-1].ID))
+			}
+		}
+
+		return m, tea.Batch(cmds...)
 
 	case cachedMessagesMsg:
 		if msg.chatID != m.currentChatID() {
@@ -500,7 +591,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 		}
 
-		m = m.refreshMessagesView()
+		m = m.markRead(m.currentChatID())
+		m = m.refreshMessagesView().followLatest()
 		return m, refreshUnread(m)
 
 	case sendResultMsg:
@@ -541,6 +633,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if m.stage != stageReady || m.searchMode {
 			return m, nil
+		}
+		switch {
+		// Scroll wheel targets the message viewport directly.
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelUp:
+			m.viewport.vp.LineUp(3)
+		case msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonWheelDown:
+			m.viewport.vp.LineDown(3)
 		}
 		dividerX := m.sidebarWidth
 		switch {
@@ -592,7 +691,7 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 				time.Since(last.Timestamp) < time.Minute {
 				*last = msg
 				m.status = "Sent"
-				m = m.refreshMessagesView()
+				m = m.refreshMessagesView().followLatest()
 				return m, tea.Batch(refreshUnread(m), rearm)
 			}
 		}
@@ -601,11 +700,11 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 			m.messages = append(m.messages, msg)
 		}
 		m.status = fmt.Sprintf("New message from %s", msg.Sender.DisplayName)
-		m = m.refreshMessagesView()
+		m = m.refreshMessagesView().followLatest()
 		return m, tea.Batch(refreshUnread(m), rearm)
 	}
 
-	// Elsewhere: bump unread + notify.
+	// Elsewhere: bump unread + notify (with an audible bell).
 	for i, c := range m.chats {
 		if c.ID == msg.ChatID && (c.Platform == msg.Platform || c.Platform == "") {
 			m.chats[i].UnreadCount++
@@ -617,6 +716,8 @@ func (m Model) handleLive(msg core.Message) (tea.Model, tea.Cmd) {
 		sender = "Unknown"
 	}
 	m.flash("["+tag+"] "+sender+": "+msg.Text, false)
+	// ASCII bell: rings the terminal on background activity (§1.6).
+	m.status = "\a" + m.status
 	return m, tea.Batch(refreshUnread(m), rearm)
 }
 
@@ -659,8 +760,11 @@ func metaName(p core.Platform) string {
 }
 
 // filterPlatform keeps only chats belonging to the platform (legacy rows
-// with an empty Platform count as Telegram).
+// with an empty Platform count as Telegram). PlatformAll keeps everything.
 func filterPlatform(chats []core.Chat, p core.Platform) []core.Chat {
+	if p == core.PlatformAll {
+		return append(chats[:0:0], chats...)
+	}
 	out := chats[:0:0]
 	for _, c := range chats {
 		if c.Platform == p || c.Platform == "" && p == core.PlatformTelegram {
@@ -668,6 +772,15 @@ func filterPlatform(chats []core.Chat, p core.Platform) []core.Chat {
 		}
 	}
 	return out
+}
+
+// showError switches to the recoverable error screen (§2.5).
+func (m *Model) showError(context string, err error) {
+	m.fatal = context
+	if err != nil {
+		m.fatal += ": " + err.Error()
+	}
+	m.stage = stageError
 }
 
 // openDashboard returns to the platform selection screen.
@@ -678,7 +791,9 @@ func (m *Model) openDashboard() {
 	m.chatIdx = 0
 	m.searchMode = false
 	m.search.Blur()
-	m.focusComposer = false
+	m.focus = PaneSidebar
 	m.composer.Blur()
+	m.confirming = false
+	m.fatal = ""
 	m.viewport.dirty = true
 }

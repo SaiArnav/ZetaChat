@@ -9,6 +9,10 @@ const (
 	PlatformTelegram Platform = "telegram"
 	PlatformWhatsApp Platform = "whatsapp"
 	PlatformDiscord  Platform = "discord"
+
+	// PlatformAll is a pseudo-platform: the unified inbox view that
+	// merges chats from every connected platform into one list.
+	PlatformAll Platform = "all"
 )
 
 // Attachment represents a file, image, or media item attached to a message.

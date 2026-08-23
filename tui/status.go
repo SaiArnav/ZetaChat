@@ -6,39 +6,61 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// statusView renders the bottom bar: live status on the left, keys on the right.
+// modeName derives the current interaction mode chip shown in the bar.
+func (m Model) modeName() string {
+	if m.helpOpen {
+		return "HELP"
+	}
+	switch m.stage {
+	case stageBooting:
+		return "BOOT"
+	case stageLoading:
+		return "LOAD"
+	case stageAuth:
+		return "AUTH"
+	case stageQR:
+		return "PAIR"
+	case stageError:
+		return "ERROR"
+	case stageDashboard:
+		return "DASH"
+	case stageReady:
+		if m.searchMode {
+			return "SEARCH"
+		}
+		switch m.focus {
+		case PaneComposer:
+			if m.confirming {
+				return "CONFIRM"
+			}
+			return "EDIT"
+		case PaneMessages:
+			return "VIEW"
+		default:
+			return "CHATS"
+		}
+	}
+	return "…"
+}
+
+// statusView renders the bottom bar: mode chip + live status on the
+// left, contextual key hints (from keyMap) on the right. It re-derives
+// everything from current state on every render, so every focus/mode
+// transition is reflected immediately.
 func (m Model) statusView() string {
-	left := dimStyle.Render(m.status)
-	if left == "" {
-		left = dimStyle.Render(" ")
+	chip := modeChip.Render(m.modeName())
+
+	left := chip + " " + dimStyle.Render(strings.TrimPrefix(m.status, "\a"))
+
+	// The mouse-off notice is a luxury; drop it on narrow terminals.
+	if !m.mouseOn && lipgloss.Width(left)+14 < m.width-2 {
+		left = chip + dimStyle.Render(" · mouse off") +
+			" " + dimStyle.Render(strings.TrimPrefix(m.status, "\a"))
 	}
 
 	var right string
-
-	switch m.stage {
-	case stageReady:
-		if m.searchMode {
-			right = helpKey.Render("enter") + helpDim.Render(" search ") +
-				helpKey.Render("j/k") + helpDim.Render(" pick ") +
-				helpKey.Render("esc") + helpDim.Render(" close")
-		} else if m.focusViewport {
-			right = helpKey.Render("j/k") + helpDim.Render(" scroll ") +
-				helpKey.Render("g/G") + helpDim.Render(" top/bot ") +
-				helpKey.Render("esc") + helpDim.Render(" back")
-		} else if m.focusComposer {
-			right = helpKey.Render("enter") + helpDim.Render(" send ") +
-				helpKey.Render("esc") + helpDim.Render(" sidebar")
-		} else {
-			right = helpKey.Render("j/k") + helpDim.Render(" nav ") +
-				helpKey.Render("enter") + helpDim.Render(" open ") +
-				helpKey.Render("tab") + helpDim.Render(" type ") +
-				helpKey.Render("s") + helpDim.Render(" scroll ") +
-				helpKey.Render("/") + helpDim.Render(" search ") +
-				helpKey.Render("r") + helpDim.Render(" refresh ") +
-				helpKey.Render("q") + helpDim.Render(" quit")
-		}
-	default:
-		right = helpKey.Render("ctrl+c") + helpDim.Render(" quit")
+	if !m.helpOpen {
+		right = m.help.ShortHelpView(shortHelpFor(m))
 	}
 
 	width := m.width
@@ -46,33 +68,20 @@ func (m Model) statusView() string {
 		width = 80
 	}
 
-	leftWidth := lipgloss.Width(left)
-	rightWidth := lipgloss.Width(right)
+	contentWidth := width - 2 // statusBar padding
 
-	// statusBar has horizontal padding of 1 on both sides.
-	// Therefore only width-2 columns are available for actual content.
-	contentWidth := width - 2
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
-
-	// Leave at least one space between the left and right sections.
-	pad := contentWidth - leftWidth - rightWidth
-
+	pad := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
 	if pad < 1 {
-		// There is not enough room for both sections.
-		// Keep the status visible and hide the key hints rather
-		// than allowing them to overflow past the terminal edge.
+		// Not enough room: keep status, drop hints.
 		right = ""
-		rightWidth = 0
-		pad = contentWidth - leftWidth
+		pad = contentWidth - lipgloss.Width(left)
 	}
-
 	if pad < 1 {
 		pad = 1
 	}
 
-	return statusBar.Render(
-		left + strings.Repeat(" ", pad) + right,
-	)
+	line := left + strings.Repeat(" ", pad) + right
+
+	// Never overflow: hard-clip whatever remains.
+	return statusBar.Render(truncateRight(line, contentWidth))
 }

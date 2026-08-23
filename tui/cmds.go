@@ -1,6 +1,10 @@
 package tui
 
 import (
+	"errors"
+	"sort"
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/SaiArnav/ZetaChat/core"
@@ -29,10 +33,42 @@ func loadChatsCmd(a core.LiveMessenger, store *storage.Store) tea.Cmd {
 	}
 }
 
-// openChatCmd loads the currently selected chat's messages from the network.
+// loadAllChatsCmd merges the chat lists of every ready platform into one
+// unified inbox payload. Per-platform failures degrade gracefully: the
+// error is reported in the status line, whatever loaded still shows.
+func loadAllChatsCmd(m Model) tea.Cmd {
+	ready := m.readyAdapters()
+	store := m.store
+	return func() tea.Msg {
+		var merged []core.Chat
+		var failures []string
+		for _, p := range ready {
+			chats, err := m.adapters[p].Chats()
+			if err != nil {
+				failures = append(failures, string(p)+": "+err.Error())
+				continue
+			}
+			merged = append(merged, chats...)
+		}
+		if store != nil && len(merged) > 0 {
+			_ = store.SaveChats(merged)
+		}
+		var err error
+		if len(failures) > 0 && len(merged) == 0 {
+			err = errors.New(strings.Join(failures, "; "))
+		}
+		return chatsLoadedMsg{chats: merged, err: err}
+	}
+}
+
+// openChatCmd loads the currently selected chat's messages from the
+// network, routed through the adapter that owns the chat (important in
+// unified-inbox mode, where activePlat has no adapter of its own).
 func openChatCmd(m Model) tea.Cmd {
-	chatID := m.chats[m.chatIdx].ID
-	a, s := m.activeAdapter(), m.store
+	chat := m.chats[m.chatIdx]
+	a := m.adapterForChat(chat)
+	s := m.store
+	chatID := chat.ID
 	return func() tea.Msg {
 		msgs, err := a.Messages(chatID)
 		if err == nil {
@@ -55,6 +91,15 @@ func openCachedChatCmd(m Model) tea.Cmd {
 	}
 }
 
+// markReadCmd sends a platform read receipt in the background so the
+// server-side unread counter clears too (no resurrection on refresh).
+func markReadCmd(rm core.ChatReadMarker, chatID, lastMsgID string) tea.Cmd {
+	return func() tea.Msg {
+		_ = rm.MarkChatRead(chatID, lastMsgID)
+		return nil
+	}
+}
+
 // sendCmd delivers a message through the active platform's adapter.
 func sendCmd(a core.LiveMessenger, chatID, text string) tea.Cmd {
 	return func() tea.Msg {
@@ -68,6 +113,32 @@ func searchCmd(a core.LiveMessenger, q string) tea.Cmd {
 	return func() tea.Msg {
 		msgs, err := a.Search(q)
 		return searchResultMsg{query: q, msgs: msgs, err: err}
+	}
+}
+
+// searchAllCmd runs the query against every ready platform and merges
+// the results, newest first.
+func searchAllCmd(m Model, q string) tea.Cmd {
+	ready := m.readyAdapters()
+	return func() tea.Msg {
+		var merged []core.Message
+		var failures []string
+		for _, p := range ready {
+			msgs, err := m.adapters[p].Search(q)
+			if err != nil {
+				failures = append(failures, string(p))
+				continue
+			}
+			merged = append(merged, msgs...)
+		}
+		sort.SliceStable(merged, func(i, j int) bool {
+			return merged[i].Timestamp.After(merged[j].Timestamp)
+		})
+		var err error
+		if len(failures) > 0 && len(merged) == 0 {
+			err = errors.New("search failed on " + strings.Join(failures, ", "))
+		}
+		return searchResultMsg{query: q, msgs: merged, err: err}
 	}
 }
 

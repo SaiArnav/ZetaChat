@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -40,7 +41,7 @@ func TestReadyViewRendersLayout(t *testing.T) {
 				Out:       true,
 			},
 		},
-		composer: textinput.New(),
+		composer: (func() textarea.Model { ta := textarea.New(); ta.Prompt = ""; return ta })(),
 		search:   textinput.New(),
 	}
 
@@ -81,7 +82,7 @@ func TestReadyViewDoesNotExceedTerminalHeight(t *testing.T) {
 				Sender:    core.User{DisplayName: "Arnav"},
 			},
 		},
-		composer: textinput.New(),
+		composer: (func() textarea.Model { ta := textarea.New(); ta.Prompt = ""; return ta })(),
 		search:   textinput.New(),
 	}
 
@@ -124,7 +125,7 @@ func TestNewMessageRefreshesViewport(t *testing.T) {
 				Sender:    core.User{DisplayName: "Arnav"},
 			},
 		},
-		composer: textinput.New(),
+		composer: (func() textarea.Model { ta := textarea.New(); ta.Prompt = ""; return ta })(),
 		search:   textinput.New(),
 	}
 
@@ -168,7 +169,7 @@ func TestHandleLiveReplacesLocalEcho(t *testing.T) {
 				Out:       true,
 			},
 		},
-		composer: textinput.New(),
+		composer: (func() textarea.Model { ta := textarea.New(); ta.Prompt = ""; return ta })(),
 		search:   textinput.New(),
 	}
 
@@ -227,7 +228,7 @@ func TestLocalEchoAppearsImmediately(t *testing.T) {
 		messages: []core.Message{
 			{ID: "m1", ChatID: "u1", Text: "existing", Timestamp: time.Now()},
 		},
-		composer: textinput.New(),
+		composer: (func() textarea.Model { ta := textarea.New(); ta.Prompt = ""; return ta })(),
 		search:   textinput.New(),
 	}
 	m.composer.SetValue("hello world")

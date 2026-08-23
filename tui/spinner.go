@@ -4,6 +4,6 @@ import "github.com/charmbracelet/lipgloss"
 
 func spinnerStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(lime).
+		Foreground(accent).
 		Bold(true)
 }

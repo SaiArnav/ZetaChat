@@ -97,6 +97,9 @@ func (a *Adapter) Messages(chatID string) ([]core.Message, error) {
 
 // SendMessage delivers a text message to a chat JID.
 func (a *Adapter) SendMessage(chatID string, text string) error {
+	if err := core.GateSend(chatID, text); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	client, paired := a.client, a.paired
 	a.mu.Unlock()

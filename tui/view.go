@@ -12,32 +12,43 @@ func (m Model) View() string {
 		return ""
 	}
 
+	var out string
+
 	switch m.stage {
 	case stageBooting, stageLoading:
-		return m.splashView(
+		out = m.splashView(
 			m.spinner.View() + "  " + baseText.Render(m.status),
 		)
 
 	case stageAuth:
-		return m.authView()
+		out = m.authView()
 
 	case stageQR:
-		return m.qrView()
+		out = m.qrView()
 
 	case stageDashboard:
-		return m.dashboardView()
+		out = m.dashboardView()
+
+	case stageError:
+		out = m.errorView()
 
 	case stageReady:
-		return m.mainView()
+		out = m.mainView()
 	}
 
-	return ""
+	if m.helpOpen {
+		return renderHelpOverlay(m)
+	}
+	return out
 }
 
 func (m Model) splashView(content string) string {
-	header := bannerStyle.Render(banner())
-	hint := dimStyle.Render("esc dashboard · ctrl+c quit")
-	return m.centerView(header + "\n\n\n" + content + "\n\n" + hint)
+	// Slim boot screen: a quiet wordmark instead of the old ASCII
+	// banner wall, so launching lands you in the app immediately.
+	head := titleStyle.Render("ZETACHAT") +
+		dimStyle.Render("  //  multi-platform relay")
+	hint := dimStyle.Render("esc dashboard · ? help · M mouse · ctrl+c quit")
+	return m.centerView(head + "\n\n" + content + "\n\n" + hint)
 }
 
 func (m Model) centerView(content string) string {
@@ -60,80 +71,117 @@ func (m Model) centerView(content string) string {
 	)
 }
 
+// mainView composes the chat workspace: a slim titlebar, the bordered
+// sidebar + message pane + composer box in the middle, and the status
+// bar at the bottom.
 func (m Model) mainView() string {
-	header := headerBarStyle.Render(
-		titleStyle.Render("ZETACHAT"),
-	)
-	if m.selfName != "" {
-		header += dimStyle.Render("   " + m.selfName)
-	}
-
-	// Render the divider with the dim style instead of the terminal's
-	// default foreground. This prevents the bright white line.
-	header += "\n" + headerBarStyle.Render(
-		dimStyle.Render(strings.Repeat("─", m.width)),
-	)
+	titlebar := m.titleBar()
 
 	sidebar := m.sidebarView()
-	chat := m.chatPaneView()
+	messages := m.messagesPane()
+	composer := m.composerBox()
+
+	chatCol := lipgloss.JoinVertical(lipgloss.Left, messages, composer)
 
 	body := lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		sidebar,
-		chat,
+		chatCol,
 	)
 
-	return header + "\n" + body + "\n" + m.statusView()
+	return titlebar + body + m.statusView()
 }
 
-// chatPaneView renders the right-hand pane: title, content, composer.
-func (m Model) chatPaneView() string {
-	title := m.chatTitle()
-	composer := m.composerView()
+// titleBar is the slim inverted app bar.
+func (m Model) titleBar() string {
+	left := titleBarStyle.Render(titleStyle.Render(" ZETACHAT")) +
+		titleBarStyle.Render(dimStyle.Render("  //  "+metaName(m.activePlat)))
 
-	vw := m.chatPaneWidth()
-
-	vh := m.chatPaneHeight() - titleHeight - composerH
-	if vh < 1 {
-		vh = 1
+	right := ""
+	if m.selfName != "" {
+		right = titleBarStyle.Render(dimStyle.Render(m.selfName + " "))
 	}
 
+	width := m.width
+	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 0 {
+		pad = 0
+	}
+
+	return headerBarStyle.Render(left+strings.Repeat(" ", pad)+right) + "\n"
+}
+
+// messagesPane wraps viewport/search content in a focus-bordered pane
+// with its own header strip.
+func (m Model) messagesPane() string {
 	var content string
 
 	if m.searchMode {
-		searchContent := m.search.View() + "\n\n"
-
 		results := truncateLines(
 			m.searchResultsView(),
-			vh-3,
+			m.messageVPHeight(),
 		)
-
-		content = scrollPane(
-			searchContent+results,
-			vw,
-			vh,
-		)
+		content = scrollPane(results, m.chatPaneWidth(), m.messageVPHeight())
 	} else {
 		content = m.viewport.vp.View()
 	}
 
-	return chatPaneStyle.Render(
-		lipgloss.JoinVertical(
-			lipgloss.Top,
-			title,
-			content,
-			composer,
-		),
-	)
+	inner := m.paneHeader() + "\n" + content
+
+	box := paneBorder(m.focus == PaneMessages).
+		Width(m.width - m.sidebarWidth).
+		Render(inner)
+
+	// Exact target height: header + viewport + two borders.
+	target := m.messageVPHeight() + 3
+	for lipgloss.Height(box) < target {
+		box += "\n"
+	}
+	return box
 }
 
-func (m Model) composerView() string {
-	if m.focusComposer {
-		return m.composer.View()
+// composerBox draws the input inside its own bordered pane; focused =
+// ember border, unfocused = quiet.
+func (m Model) composerBox() string {
+	var inner string
+	switch {
+	case m.confirming:
+		inner = flashStyle.Render("send? ") +
+			baseText.Render(truncateRight(m.composer.Value(), 40))
+	case m.focus == PaneComposer:
+		inner = m.composer.View()
+	default:
+		inner = dimStyle.Render("❯ press tab to type")
 	}
 
-	return dimStyle.Render("❯ ") +
-		dimStyle.Render("press tab to type")
+	box := paneBorder(m.focus == PaneComposer || m.confirming).
+		Width(m.width-m.sidebarWidth).
+		Padding(0, 0).
+		Render(inner)
+
+	// The composer box height is fixed: content + borders.
+	target := m.composerHeight() + 2
+	for lipgloss.Height(box) < target {
+		box += "\n"
+	}
+	return box
+}
+
+// errorView renders the recoverable app-error screen (§2.5).
+func (m Model) errorView() string {
+	body := errorStyle.Render("Something broke") +
+		"\n\n" + baseText.Render(m.fatal) +
+		"\n\n" + dimStyle.Render("esc back to dashboard · ctrl+c quit")
+	return m.centerView(body)
+}
+
+// padToHeight pads a block with trailing blank lines to exactly h rows.
+func padToHeight(s string, h int) string {
+	gap := h - lipgloss.Height(s)
+	if gap <= 0 {
+		return s
+	}
+	return s + strings.Repeat("\n", gap)
 }
 
 // scrollPane clips rendered content to the pane dimensions.

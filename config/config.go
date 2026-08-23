@@ -15,13 +15,14 @@ type Config struct {
 	AppID   int
 	AppHash string
 
-	// DiscordToken is a Discord bot token (from discord.com/developers).
-	// Empty means the Discord platform is disabled.
-	DiscordToken string
-
 	// WhatsAppEnabled can be set to "0"/"false" to skip the WhatsApp
 	// adapter. WhatsApp needs no credentials — it links by QR code.
 	WhatsAppEnabled bool
+
+	// ConfirmSend makes the TUI ask for explicit confirmation before
+	// delivering every message (ZETACHAT_CONFIRM_SEND=1). The core
+	// GateSend choke point stays available for agent layers regardless.
+	ConfirmSend bool
 
 	// DataDir is where the SQLite cache + sessions live.
 	DataDir string
@@ -78,6 +79,11 @@ func Load() (*Config, error) {
 		cfg.WhatsAppEnabled = false
 	default:
 		cfg.WhatsAppEnabled = true
+	}
+
+	switch strings.ToLower(envStr("ZETACHAT_CONFIRM_SEND")) {
+	case "1", "true", "yes", "on":
+		cfg.ConfirmSend = true
 	}
 
 	if !telegramConfigured && !cfg.WhatsAppEnabled {

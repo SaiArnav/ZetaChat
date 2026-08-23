@@ -49,7 +49,7 @@ func (m Model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ans := m.authPrompt.input.Value()
 		m.authPrompt.reply <- ans
 		m.authPrompt = nil
-		m.stage = stageBooting
+		m.stage = stageDashboard
 		m.status = "Authenticating…"
 		return m, nil
 	case tea.KeyEsc, tea.KeyCtrlC:
